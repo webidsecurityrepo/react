@@ -19,19 +19,7 @@ const loggedErrors = (global.__loggedErrors = global.__loggedErrors || []);
 const loggedWarns = (global.__loggedWarns = global.__loggedWarns || []);
 const loggedLogs = (global.__loggedLogs = global.__loggedLogs || []);
 
-// TODO: delete these after code modding away from toWarnDev.
-const unexpectedErrorCallStacks = (global.__unexpectedErrorCallStacks =
-  global.__unexpectedErrorCallStacks || []);
-const unexpectedWarnCallStacks = (global.__unexpectedWarnCallStacks =
-  global.__unexpectedWarnCallStacks || []);
-const unexpectedLogCallStacks = (global.__unexpectedLogCallStacks =
-  global.__unexpectedLogCallStacks || []);
-
-const patchConsoleMethod = (
-  methodName,
-  unexpectedConsoleCallStacks,
-  logged,
-) => {
+const patchConsoleMethod = (methodName, logged) => {
   const newMethod = function (format, ...args) {
     // Ignore uncaught errors reported by jsdom
     // and React addendums because they're too noisy.
@@ -44,14 +32,34 @@ const patchConsoleMethod = (
       return;
     }
 
-    // Capture the call stack now so we can warn about it later.
-    // The call stack has helpful information for the test author.
-    // Don't throw yet though b'c it might be accidentally caught and suppressed.
-    const stack = new Error().stack;
-    unexpectedConsoleCallStacks.push([
-      stack.slice(stack.indexOf('\n') + 1),
-      util.format(format, ...args),
-    ]);
+    // Append Component Stacks. Simulates a framework or DevTools appending them.
+    if (
+      typeof format === 'string' &&
+      (methodName === 'error' || methodName === 'warn')
+    ) {
+      const React = require('react');
+      if (React.captureOwnerStack) {
+        // enableOwnerStacks enabled. When it's always on, we can assume this case.
+        const stack = React.captureOwnerStack();
+        if (stack) {
+          format += '%s';
+          args.push(stack);
+        }
+      } else {
+        // Otherwise we have to use internals to emulate parent stacks.
+        const ReactSharedInternals =
+          React.__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE ||
+          React.__SERVER_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE;
+        if (ReactSharedInternals && ReactSharedInternals.getCurrentStack) {
+          const stack = ReactSharedInternals.getCurrentStack();
+          if (stack !== '') {
+            format += '%s';
+            args.push(stack);
+          }
+        }
+      }
+    }
+
     logged.push([format, ...args]);
   };
 
@@ -60,123 +68,40 @@ const patchConsoleMethod = (
   return newMethod;
 };
 
-const flushUnexpectedConsoleCalls = (
-  mockMethod,
-  methodName,
-  expectedMatcher,
-  unexpectedConsoleCallStacks,
-) => {
-  if (
-    console[methodName] !== mockMethod &&
-    !jest.isMockFunction(console[methodName])
-  ) {
-    // throw new Error(
-    //  `Test did not tear down console.${methodName} mock properly.`
-    // );
-  }
-  if (unexpectedConsoleCallStacks.length > 0) {
-    const messages = unexpectedConsoleCallStacks.map(
-      ([stack, message]) =>
-        `${chalk.red(message)}\n` +
-        `${stack
-          .split('\n')
-          .map(line => chalk.gray(line))
-          .join('\n')}`,
-    );
-
-    const type = methodName === 'log' ? 'log' : 'warning';
-    const message =
-      `Expected test not to call ${chalk.bold(
-        `console.${methodName}()`,
-      )}.\n\n` +
-      `If the ${type} is expected, test for it explicitly by:\n` +
-      `1. Using ${chalk.bold(expectedMatcher + '()')} or...\n` +
-      `2. Mock it out using ${chalk.bold(
-        'spyOnDev',
-      )}(console, '${methodName}') or ${chalk.bold(
-        'spyOnProd',
-      )}(console, '${methodName}'), and test that the ${type} occurs.`;
-
-    throw new Error(`${message}\n\n${messages.join('\n\n')}`);
-  }
-};
-
-let errorMethod;
-let warnMethod;
 let logMethod;
 export function patchConsoleMethods({includeLog} = {includeLog: false}) {
-  errorMethod = patchConsoleMethod(
-    'error',
-    unexpectedErrorCallStacks,
-    loggedErrors,
-  );
-  warnMethod = patchConsoleMethod(
-    'warn',
-    unexpectedWarnCallStacks,
-    loggedWarns,
-  );
+  patchConsoleMethod('error', loggedErrors);
+  patchConsoleMethod('warn', loggedWarns);
 
   // Only assert console.log isn't called in CI so you can debug tests in DEV.
   // The matchers will still work in DEV, so you can assert locally.
   if (includeLog) {
-    logMethod = patchConsoleMethod('log', unexpectedLogCallStacks, loggedLogs);
+    logMethod = patchConsoleMethod('log', loggedLogs);
   }
-}
-
-export function flushAllUnexpectedConsoleCalls() {
-  flushUnexpectedConsoleCalls(
-    errorMethod,
-    'error',
-    'assertConsoleErrorDev',
-    unexpectedErrorCallStacks,
-  );
-  flushUnexpectedConsoleCalls(
-    warnMethod,
-    'warn',
-    'assertConsoleWarnDev',
-    unexpectedWarnCallStacks,
-  );
-  if (logMethod) {
-    flushUnexpectedConsoleCalls(
-      logMethod,
-      'log',
-      'assertConsoleLogDev',
-      unexpectedLogCallStacks,
-    );
-    unexpectedLogCallStacks.length = 0;
-  }
-  unexpectedErrorCallStacks.length = 0;
-  unexpectedWarnCallStacks.length = 0;
 }
 
 export function resetAllUnexpectedConsoleCalls() {
   loggedErrors.length = 0;
   loggedWarns.length = 0;
-  unexpectedErrorCallStacks.length = 0;
-  unexpectedWarnCallStacks.length = 0;
   if (logMethod) {
     loggedLogs.length = 0;
-    unexpectedLogCallStacks.length = 0;
   }
 }
 
 export function clearLogs() {
   const logs = Array.from(loggedLogs);
-  unexpectedLogCallStacks.length = 0;
   loggedLogs.length = 0;
   return logs;
 }
 
 export function clearWarnings() {
   const warnings = Array.from(loggedWarns);
-  unexpectedWarnCallStacks.length = 0;
   loggedWarns.length = 0;
   return warnings;
 }
 
 export function clearErrors() {
   const errors = Array.from(loggedErrors);
-  unexpectedErrorCallStacks.length = 0;
   loggedErrors.length = 0;
   return errors;
 }
@@ -204,7 +129,7 @@ export function assertConsoleLogsCleared() {
     if (warnings.length > 0) {
       message += `\nconsole.warn was called without assertConsoleWarnDev:\n${diff(
         '',
-        warnings.join('\n'),
+        warnings.map(normalizeComponentStack).join('\n'),
         {
           omitAnnotationLines: true,
         },
@@ -213,7 +138,7 @@ export function assertConsoleLogsCleared() {
     if (errors.length > 0) {
       message += `\nconsole.error was called without assertConsoleErrorDev:\n${diff(
         '',
-        errors.join('\n'),
+        errors.map(normalizeComponentStack).join('\n'),
         {
           omitAnnotationLines: true,
         },
@@ -228,7 +153,7 @@ export function assertConsoleLogsCleared() {
   }
 }
 
-function replaceComponentStack(str) {
+function normalizeCodeLocInfo(str) {
   if (typeof str !== 'string') {
     return str;
   }
@@ -239,9 +164,28 @@ function replaceComponentStack(str) {
   //  at Component (/path/filename.js:123:45)
   // React format:
   //    in Component (at filename.js:123)
-  return str.replace(/\n +(?:at|in) ([\S]+)[^\n]*.*/, function (m, name) {
-    return chalk.dim(' <component stack>');
+  return str.replace(/\n +(?:at|in) ([\S]+)[^\n]*/g, function (m, name) {
+    if (name.endsWith('.render')) {
+      // Class components will have the `render` method as part of their stack trace.
+      // We strip that out in our normalization to make it look more like component stacks.
+      name = name.slice(0, name.length - 7);
+    }
+    name = name.replace(/.*\/([^\/]+):\d+:\d+/, '**/$1:**:**');
+    return '\n    in ' + name + ' (at **)';
   });
+}
+
+function normalizeComponentStack(entry) {
+  if (
+    typeof entry[0] === 'string' &&
+    entry[0].endsWith('%s') &&
+    isLikelyAComponentStack(entry[entry.length - 1])
+  ) {
+    const clone = entry.slice(0);
+    clone[clone.length - 1] = normalizeCodeLocInfo(entry[entry.length - 1]);
+    return clone;
+  }
+  return entry;
 }
 
 const isLikelyAComponentStack = message =>
@@ -382,11 +326,11 @@ export function createLogAssertion(
             );
           }
 
-          expectedMessage = replaceComponentStack(currentExpectedMessage);
+          expectedMessage = normalizeCodeLocInfo(currentExpectedMessage);
           expectedWithoutStack = expectedMessageOrArray[1].withoutStack;
         } else if (typeof expectedMessageOrArray === 'string') {
           // Should be in the form assert(['log']) or assert(['log'], {withoutStack: true})
-          expectedMessage = replaceComponentStack(expectedMessageOrArray);
+          expectedMessage = normalizeCodeLocInfo(expectedMessageOrArray);
           if (consoleMethod === 'log') {
             expectedWithoutStack = true;
           } else {
@@ -410,7 +354,7 @@ export function createLogAssertion(
           );
         }
 
-        const normalizedMessage = replaceComponentStack(message);
+        const normalizedMessage = normalizeCodeLocInfo(message);
         receivedLogs.push(normalizedMessage);
 
         // Check the number of %s interpolations.

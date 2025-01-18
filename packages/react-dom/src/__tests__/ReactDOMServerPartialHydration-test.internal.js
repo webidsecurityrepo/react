@@ -26,6 +26,7 @@ let waitForAll;
 let waitFor;
 let waitForPaint;
 let assertLog;
+let assertConsoleErrorDev;
 
 function normalizeError(msg) {
   // Take the first sentence to make it easier to assert on.
@@ -124,6 +125,7 @@ describe('ReactDOMServerPartialHydration', () => {
     assertLog = InternalTestUtils.assertLog;
     waitForPaint = InternalTestUtils.waitForPaint;
     waitFor = InternalTestUtils.waitFor;
+    assertConsoleErrorDev = InternalTestUtils.assertConsoleErrorDev;
 
     IdleEventPriority = require('react-reconciler/constants').IdleEventPriority;
   });
@@ -1916,9 +1918,18 @@ describe('ReactDOMServerPartialHydration', () => {
 
       // While we're part way through the hydration, we update the state.
       // This will schedule an update on the children of the suspense boundary.
-      expect(() => updateText('Hi')).toErrorDev(
-        "Can't perform a React state update on a component that hasn't mounted yet.",
-      );
+      updateText('Hi');
+      assertConsoleErrorDev([
+        "Can't perform a React state update on a component that hasn't mounted yet. " +
+          'This indicates that you have a side-effect in your render function that ' +
+          'asynchronously later calls tries to update the component. Move this work to useEffect instead.\n' +
+          (gate('enableOwnerStacks')
+            ? ''
+            : '    in Child (at **)\n' +
+              '    in Suspense (at **)\n' +
+              '    in div (at **)\n') +
+          '    in App (at **)',
+      ]);
 
       // This will throw it away and rerender.
       await waitForAll(['Child']);
@@ -2551,14 +2562,7 @@ describe('ReactDOMServerPartialHydration', () => {
     suspend = true;
 
     await act(async () => {
-      if (gate(flags => flags.forceConcurrentByDefaultForTesting)) {
-        await waitFor(['Before']);
-        // This took a long time to render.
-        Scheduler.unstable_advanceTime(1000);
-        await waitFor(['After']);
-      } else {
-        await waitFor(['Before', 'After']);
-      }
+      await waitFor(['Before', 'After']);
 
       // This will cause us to skip the second row completely.
     });
@@ -3750,6 +3754,10 @@ describe('ReactDOMServerPartialHydration', () => {
     await waitForPaint(['App']);
     expect(visibleRef.current).toBe(visibleSpan);
 
+    if (gate(flags => flags.enableYieldingBeforePassive)) {
+      // Passive effects.
+      await waitForPaint([]);
+    }
     // Subsequently, the hidden child is prerendered on the client
     await waitForPaint(['HiddenChild']);
     expect(container).toMatchInlineSnapshot(`

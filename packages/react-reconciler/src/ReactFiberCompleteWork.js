@@ -28,6 +28,10 @@ import type {
   OffscreenState,
   OffscreenQueue,
 } from './ReactFiberActivityComponent';
+import type {
+  ViewTransitionProps,
+  ViewTransitionState,
+} from './ReactFiberViewTransitionComponent';
 import {isOffscreenManual} from './ReactFiberActivityComponent';
 import type {TracingMarkerInstance} from './ReactFiberTracingMarkerComponent';
 import type {Cache} from './ReactFiberCacheComponent';
@@ -35,12 +39,14 @@ import {
   enableLegacyHidden,
   enableSuspenseCallback,
   enableScopeAPI,
+  enablePersistedModeClonedFlag,
   enableProfilerTimer,
-  enableCache,
   enableTransitionTracing,
   enableRenderableContext,
   passChildrenWhenCloningPersistedNodes,
   disableLegacyMode,
+  enableSiblingPrerendering,
+  enableViewTransition,
 } from 'shared/ReactFeatureFlags';
 
 import {now} from './Scheduler';
@@ -73,6 +79,7 @@ import {
   CacheComponent,
   TracingMarkerComponent,
   Throw,
+  ViewTransitionComponent,
 } from './ReactWorkTags';
 import {NoMode, ConcurrentMode, ProfileMode} from './ReactTypeOfMode';
 import {
@@ -90,6 +97,9 @@ import {
   MaySuspendCommit,
   ScheduleRetry,
   ShouldSuspendCommit,
+  Cloned,
+  ViewTransitionStatic,
+  ViewTransitionNamedStatic,
 } from './ReactFiberFlags';
 
 import {
@@ -153,6 +163,8 @@ import {
   getRenderTargetTime,
   getWorkInProgressTransitions,
   shouldRemainOnPreviousScreen,
+  markSpawnedRetryLane,
+  trackAppearingViewTransition,
 } from './ReactFiberWorkLoop';
 import {
   OffscreenLane,
@@ -183,6 +195,16 @@ function markUpdate(workInProgress: Fiber) {
 }
 
 /**
+ * Tag the fiber with Cloned in persistent mode to signal that
+ * it received an update that requires a clone of the tree above.
+ */
+function markCloned(workInProgress: Fiber) {
+  if (supportsPersistence && enablePersistedModeClonedFlag) {
+    workInProgress.flags |= Cloned;
+  }
+}
+
+/**
  * In persistent mode, return whether this update needs to clone the subtree.
  */
 function doesRequireClone(current: null | Fiber, completedWork: Fiber) {
@@ -199,9 +221,12 @@ function doesRequireClone(current: null | Fiber, completedWork: Fiber) {
   // then we only have to check the `completedWork.subtreeFlags`.
   let child = completedWork.child;
   while (child !== null) {
+    const checkedFlags = enablePersistedModeClonedFlag
+      ? Cloned | Visibility | Placement | ChildDeletion
+      : MutationMask;
     if (
-      (child.flags & MutationMask) !== NoFlags ||
-      (child.subtreeFlags & MutationMask) !== NoFlags
+      (child.flags & checkedFlags) !== NoFlags ||
+      (child.subtreeFlags & checkedFlags) !== NoFlags
     ) {
       return true;
     }
@@ -450,6 +475,7 @@ function updateHostComponent(
 
     let newChildSet = null;
     if (requiresClone && passChildrenWhenCloningPersistedNodes) {
+      markCloned(workInProgress);
       newChildSet = createContainerChildSet();
       // If children might have changed, we have to add them all to the set.
       appendAllChildrenToContainer(
@@ -473,6 +499,8 @@ function updateHostComponent(
       // Note that this might release a previous clone.
       workInProgress.stateNode = currentInstance;
       return;
+    } else {
+      markCloned(workInProgress);
     }
 
     // Certain renderers require commit-time effects for initial mount.
@@ -485,12 +513,14 @@ function updateHostComponent(
     }
     workInProgress.stateNode = newInstance;
     if (!requiresClone) {
-      // If there are no other effects in this tree, we need to flag this node as having one.
-      // Even though we're not going to use it for anything.
-      // Otherwise parents won't know that there are new children to propagate upwards.
-      markUpdate(workInProgress);
+      if (!enablePersistedModeClonedFlag) {
+        // If there are no other effects in this tree, we need to flag this node as having one.
+        // Even though we're not going to use it for anything.
+        // Otherwise parents won't know that there are new children to propagate upwards.
+        markUpdate(workInProgress);
+      }
     } else if (!passChildrenWhenCloningPersistedNodes) {
-      // If children might have changed, we have to add them all to the set.
+      // If children have changed, we have to add them all to the set.
       appendAllChildren(
         newInstance,
         workInProgress,
@@ -580,24 +610,29 @@ function scheduleRetryEffect(
     // Schedule an effect to attach a retry listener to the promise.
     // TODO: Move to passive phase
     workInProgress.flags |= Update;
-  } else {
-    // This boundary suspended, but no wakeables were added to the retry
-    // queue. Check if the renderer suspended commit. If so, this means
-    // that once the fallback is committed, we can immediately retry
-    // rendering again, because rendering wasn't actually blocked. Only
-    // the commit phase.
-    // TODO: Consider a model where we always schedule an immediate retry, even
-    // for normal Suspense. That way the retry can partially render up to the
-    // first thing that suspends.
-    if (workInProgress.flags & ScheduleRetry) {
-      const retryLane =
-        // TODO: This check should probably be moved into claimNextRetryLane
-        // I also suspect that we need some further consolidation of offscreen
-        // and retry lanes.
-        workInProgress.tag !== OffscreenComponent
-          ? claimNextRetryLane()
-          : OffscreenLane;
-      workInProgress.lanes = mergeLanes(workInProgress.lanes, retryLane);
+  }
+
+  // Check if we need to schedule an immediate retry. This should happen
+  // whenever we unwind a suspended tree without fully rendering its siblings;
+  // we need to begin the retry so we can start prerendering them.
+  //
+  // We also use this mechanism for Suspensey Resources (e.g. stylesheets),
+  // because those don't actually block the render phase, only the commit phase.
+  // So we can start rendering even before the resources are ready.
+  if (workInProgress.flags & ScheduleRetry) {
+    const retryLane =
+      // TODO: This check should probably be moved into claimNextRetryLane
+      // I also suspect that we need some further consolidation of offscreen
+      // and retry lanes.
+      workInProgress.tag !== OffscreenComponent
+        ? claimNextRetryLane()
+        : OffscreenLane;
+    workInProgress.lanes = mergeLanes(workInProgress.lanes, retryLane);
+
+    // Track the lanes that have been scheduled for an immediate retry so that
+    // we can mark them as suspended upon committing the root.
+    if (enableSiblingPrerendering) {
+      markSpawnedRetryLane(retryLane);
     }
   }
 }
@@ -618,15 +653,18 @@ function updateHostText(
       // If the text content differs, we'll create a new text instance for it.
       const rootContainerInstance = getRootHostContainer();
       const currentHostContext = getHostContext();
+      markCloned(workInProgress);
       workInProgress.stateNode = createTextInstance(
         newText,
         rootContainerInstance,
         currentHostContext,
         workInProgress,
       );
-      // We'll have to mark it as having an effect, even though we won't use the effect for anything.
-      // This lets the parents know that at least one of their children has changed.
-      markUpdate(workInProgress);
+      if (!enablePersistedModeClonedFlag) {
+        // We'll have to mark it as having an effect, even though we won't use the effect for anything.
+        // This lets the parents know that at least one of their children has changed.
+        markUpdate(workInProgress);
+      }
     } else {
       workInProgress.stateNode = current.stateNode;
     }
@@ -897,11 +935,43 @@ function completeDehydratedSuspenseBoundary(
     // Successfully completed this tree. If this was a forced client render,
     // there may have been recoverable errors during first hydration
     // attempt. If so, add them to a queue so we can log them in the
-    // commit phase.
-    upgradeHydrationErrorsToRecoverable();
-
+    // commit phase. We also add them to prev state so we can get to them
+    // from the Suspense Boundary.
+    const hydrationErrors = upgradeHydrationErrorsToRecoverable();
+    if (current !== null && current.memoizedState !== null) {
+      const prevState: SuspenseState = current.memoizedState;
+      prevState.hydrationErrors = hydrationErrors;
+    }
     // Fall through to normal Suspense path
     return true;
+  }
+}
+
+function trackReappearingViewTransitions(workInProgress: Fiber): void {
+  if ((workInProgress.subtreeFlags & ViewTransitionNamedStatic) === NoFlags) {
+    // This has no named view transitions in its subtree.
+    return;
+  }
+  // This needs to search for any explicitly named reappearing View Transitions,
+  // whether they were updated in this transition or unchanged from before.
+  let child = workInProgress.child;
+  while (child !== null) {
+    if (child.tag === OffscreenComponent && child.memoizedState === null) {
+      // This tree is currently hidden so we skip it.
+    } else {
+      if (
+        child.tag === ViewTransitionComponent &&
+        (child.flags & ViewTransitionNamedStatic) !== NoFlags
+      ) {
+        const props: ViewTransitionProps = child.memoizedProps;
+        if (props.name != null && props.name !== 'auto') {
+          const instance: ViewTransitionState = child.stateNode;
+          trackAppearingViewTransition(instance, props.name);
+        }
+      }
+      trackReappearingViewTransitions(child);
+    }
+    child = child.sibling;
   }
 }
 
@@ -955,18 +1025,16 @@ function completeWork(
         }
       }
 
-      if (enableCache) {
-        let previousCache: Cache | null = null;
-        if (current !== null) {
-          previousCache = current.memoizedState.cache;
-        }
-        const cache: Cache = workInProgress.memoizedState.cache;
-        if (cache !== previousCache) {
-          // Run passive effects to retain/release the cache.
-          workInProgress.flags |= Passive;
-        }
-        popCacheProvider(workInProgress, cache);
+      let previousCache: Cache | null = null;
+      if (current !== null) {
+        previousCache = current.memoizedState.cache;
       }
+      const cache: Cache = workInProgress.memoizedState.cache;
+      if (cache !== previousCache) {
+        // Run passive effects to retain/release the cache.
+        workInProgress.flags |= Passive;
+      }
+      popCacheProvider(workInProgress, cache);
 
       if (enableTransitionTracing) {
         popRootMarkerInstance(workInProgress);
@@ -1154,6 +1222,11 @@ function completeWork(
 
             // This can happen when we abort work.
             bubbleProperties(workInProgress);
+            if (enableViewTransition) {
+              // Host Components act as their own View Transitions which doesn't run enter/exit animations.
+              // We clear any ViewTransitionStatic flag bubbled from inner View Transitions.
+              workInProgress.subtreeFlags &= ~ViewTransitionStatic;
+            }
             return null;
           }
 
@@ -1179,6 +1252,11 @@ function completeWork(
           }
         }
         bubbleProperties(workInProgress);
+        if (enableViewTransition) {
+          // Host Components act as their own View Transitions which doesn't run enter/exit animations.
+          // We clear any ViewTransitionStatic flag bubbled from inner View Transitions.
+          workInProgress.subtreeFlags &= ~ViewTransitionStatic;
+        }
         return null;
       }
       // Fall through
@@ -1205,6 +1283,11 @@ function completeWork(
 
           // This can happen when we abort work.
           bubbleProperties(workInProgress);
+          if (enableViewTransition) {
+            // Host Components act as their own View Transitions which doesn't run enter/exit animations.
+            // We clear any ViewTransitionStatic flag bubbled from inner View Transitions.
+            workInProgress.subtreeFlags &= ~ViewTransitionStatic;
+          }
           return null;
         }
 
@@ -1229,6 +1312,7 @@ function completeWork(
           );
           // TODO: For persistent renderers, we should pass children as part
           // of the initial instance creation
+          markCloned(workInProgress);
           appendAllChildren(instance, workInProgress, false, false);
           workInProgress.stateNode = instance;
 
@@ -1248,6 +1332,11 @@ function completeWork(
         }
       }
       bubbleProperties(workInProgress);
+      if (enableViewTransition) {
+        // Host Components act as their own View Transitions which doesn't run enter/exit animations.
+        // We clear any ViewTransitionStatic flag bubbled from inner View Transitions.
+        workInProgress.subtreeFlags &= ~ViewTransitionStatic;
+      }
 
       // This must come at the very end of the complete phase, because it might
       // throw to suspend, and if the resource immediately loads, the work loop
@@ -1284,6 +1373,7 @@ function completeWork(
         if (wasHydrated) {
           prepareToHydrateHostTextInstance(workInProgress);
         } else {
+          markCloned(workInProgress);
           workInProgress.stateNode = createTextInstance(
             newText,
             rootContainerInstance,
@@ -1352,7 +1442,7 @@ function completeWork(
         current !== null &&
         (current.memoizedState: null | SuspenseState) !== null;
 
-      if (enableCache && nextDidTimeout) {
+      if (nextDidTimeout) {
         const offscreenFiber: Fiber = (workInProgress.child: any);
         let previousCache: Cache | null = null;
         if (
@@ -1706,6 +1796,14 @@ function completeWork(
           const prevIsHidden = prevState !== null;
           if (prevIsHidden !== nextIsHidden) {
             workInProgress.flags |= Visibility;
+            if (enableViewTransition && !nextIsHidden) {
+              // If we're revealing a new tree, we need to find any named
+              // ViewTransitions inside it that might have a deleted pair.
+              // We do this in the complete phase in case the tree has
+              // changed during the reveal but we have to do it before we
+              // find the first deleted pair in the before mutation phase.
+              trackReappearingViewTransitions(workInProgress);
+            }
           }
         } else {
           // On initial mount, we only need a Visibility effect if the tree
@@ -1751,26 +1849,24 @@ function completeWork(
         scheduleRetryEffect(workInProgress, retryQueue);
       }
 
-      if (enableCache) {
-        let previousCache: Cache | null = null;
-        if (
-          current !== null &&
-          current.memoizedState !== null &&
-          current.memoizedState.cachePool !== null
-        ) {
-          previousCache = current.memoizedState.cachePool.pool;
-        }
-        let cache: Cache | null = null;
-        if (
-          workInProgress.memoizedState !== null &&
-          workInProgress.memoizedState.cachePool !== null
-        ) {
-          cache = workInProgress.memoizedState.cachePool.pool;
-        }
-        if (cache !== previousCache) {
-          // Run passive effects to retain/release the cache.
-          workInProgress.flags |= Passive;
-        }
+      let previousCache: Cache | null = null;
+      if (
+        current !== null &&
+        current.memoizedState !== null &&
+        current.memoizedState.cachePool !== null
+      ) {
+        previousCache = current.memoizedState.cachePool.pool;
+      }
+      let cache: Cache | null = null;
+      if (
+        workInProgress.memoizedState !== null &&
+        workInProgress.memoizedState.cachePool !== null
+      ) {
+        cache = workInProgress.memoizedState.cachePool.pool;
+      }
+      if (cache !== previousCache) {
+        // Run passive effects to retain/release the cache.
+        workInProgress.flags |= Passive;
       }
 
       popTransition(workInProgress, current);
@@ -1778,19 +1874,17 @@ function completeWork(
       return null;
     }
     case CacheComponent: {
-      if (enableCache) {
-        let previousCache: Cache | null = null;
-        if (current !== null) {
-          previousCache = current.memoizedState.cache;
-        }
-        const cache: Cache = workInProgress.memoizedState.cache;
-        if (cache !== previousCache) {
-          // Run passive effects to retain/release the cache.
-          workInProgress.flags |= Passive;
-        }
-        popCacheProvider(workInProgress, cache);
-        bubbleProperties(workInProgress);
+      let previousCache: Cache | null = null;
+      if (current !== null) {
+        previousCache = current.memoizedState.cache;
       }
+      const cache: Cache = workInProgress.memoizedState.cache;
+      if (cache !== previousCache) {
+        // Run passive effects to retain/release the cache.
+        workInProgress.flags |= Passive;
+      }
+      popCacheProvider(workInProgress, cache);
+      bubbleProperties(workInProgress);
       return null;
     }
     case TracingMarkerComponent: {
@@ -1799,6 +1893,16 @@ function completeWork(
         if (instance !== null) {
           popMarkerInstance(workInProgress);
         }
+        bubbleProperties(workInProgress);
+      }
+      return null;
+    }
+    case ViewTransitionComponent: {
+      if (enableViewTransition) {
+        // We're a component that might need an exit transition. This flag will
+        // bubble up to the parent tree to indicate that there's a child that
+        // might need an exit View Transition upon unmount.
+        workInProgress.flags |= ViewTransitionStatic;
         bubbleProperties(workInProgress);
       }
       return null;

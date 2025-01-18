@@ -96,21 +96,13 @@ function getPrimitiveStackCache(): Map<string, Array<any>> {
       );
       Dispatcher.useDeferredValue(null);
       Dispatcher.useMemo(() => null);
+      Dispatcher.useOptimistic(null, (s: mixed, a: mixed) => s);
+      Dispatcher.useFormState((s: mixed, p: mixed) => s, null);
+      Dispatcher.useActionState((s: mixed, p: mixed) => s, null);
+      Dispatcher.useHostTransitionStatus();
       if (typeof Dispatcher.useMemoCache === 'function') {
         // This type check is for Flow only.
         Dispatcher.useMemoCache(0);
-      }
-      if (typeof Dispatcher.useOptimistic === 'function') {
-        // This type check is for Flow only.
-        Dispatcher.useOptimistic(null, (s: mixed, a: mixed) => s);
-      }
-      if (typeof Dispatcher.useFormState === 'function') {
-        // This type check is for Flow only.
-        Dispatcher.useFormState((s: mixed, p: mixed) => s, null);
-      }
-      if (typeof Dispatcher.useActionState === 'function') {
-        // This type check is for Flow only.
-        Dispatcher.useActionState((s: mixed, p: mixed) => s, null);
       }
       if (typeof Dispatcher.use === 'function') {
         // This type check is for Flow only.
@@ -135,11 +127,6 @@ function getPrimitiveStackCache(): Map<string, Array<any>> {
       }
 
       Dispatcher.useId();
-
-      if (typeof Dispatcher.useHostTransitionStatus === 'function') {
-        // This type check is for Flow only.
-        Dispatcher.useHostTransitionStatus();
-      }
     } finally {
       readHookLog = hookLog;
       hookLog = [];
@@ -203,7 +190,7 @@ const SuspenseException: mixed = new Error(
     '`try/catch` block. Capturing without rethrowing will lead to ' +
     'unexpected behavior.\n\n' +
     'To handle async errors, wrap your component in an error boundary, or ' +
-    "call the promise's `.catch` method and pass the result to `use`",
+    "call the promise's `.catch` method and pass the result to `use`.",
 );
 
 function use<T>(usable: Usable<T>): T {
@@ -284,9 +271,9 @@ function useState<S>(
     hook !== null
       ? hook.memoizedState
       : typeof initialState === 'function'
-      ? // $FlowFixMe[incompatible-use]: Flow doesn't like mixed types
-        initialState()
-      : initialState;
+        ? // $FlowFixMe[incompatible-use]: Flow doesn't like mixed types
+          initialState()
+        : initialState;
   hookLog.push({
     displayName: null,
     primitive: 'State',
@@ -533,15 +520,16 @@ function useId(): string {
 
 // useMemoCache is an implementation detail of Forget's memoization
 // it should not be called directly in user-generated code
-function useMemoCache(size: number): Array<any> {
+function useMemoCache(size: number): Array<mixed> {
   const fiber = currentFiber;
   // Don't throw, in case this is called from getPrimitiveStackCache
   if (fiber == null) {
     return [];
   }
 
-  // $FlowFixMe[incompatible-use]: updateQueue is mixed
-  const memoCache = fiber.updateQueue?.memoCache;
+  const memoCache =
+    // $FlowFixMe[incompatible-use]: updateQueue is mixed
+    fiber.updateQueue != null ? fiber.updateQueue.memoCache : null;
   if (memoCache == null) {
     return [];
   }
@@ -743,6 +731,24 @@ function useHostTransitionStatus(): TransitionStatus {
   return status;
 }
 
+function useResourceEffect(
+  create: () => mixed,
+  createDeps: Array<mixed> | void | null,
+  update: ((resource: mixed) => void) | void,
+  updateDeps: Array<mixed> | void | null,
+  destroy: ((resource: mixed) => void) | void,
+) {
+  nextHook();
+  hookLog.push({
+    displayName: null,
+    primitive: 'ResourceEffect',
+    stackError: new Error(),
+    value: create,
+    debugInfo: null,
+    dispatcherHookName: 'ResourceEffect',
+  });
+}
+
 const Dispatcher: DispatcherType = {
   use,
   readContext,
@@ -767,6 +773,7 @@ const Dispatcher: DispatcherType = {
   useFormState,
   useActionState,
   useHostTransitionStatus,
+  useResourceEffect,
 };
 
 // create a proxy to throw a custom error
@@ -774,6 +781,7 @@ const Dispatcher: DispatcherType = {
 const DispatcherProxyHandler = {
   get(target: DispatcherType, prop: string) {
     if (target.hasOwnProperty(prop)) {
+      // $FlowFixMe[invalid-computed-prop]
       return target[prop];
     }
     const error = new Error('Missing method in Dispatcher: ' + prop);
@@ -949,6 +957,15 @@ function parseHookName(functionName: void | string): string {
   } else {
     startIndex += 1;
   }
+
+  if (functionName.slice(startIndex).startsWith('unstable_')) {
+    startIndex += 'unstable_'.length;
+  }
+
+  if (functionName.slice(startIndex).startsWith('unstable_')) {
+    startIndex += 'experimental_'.length;
+  }
+
   if (functionName.slice(startIndex, startIndex + 3) === 'use') {
     if (functionName.length - startIndex === 3) {
       return 'Use';
@@ -999,6 +1016,7 @@ function buildTree(
         }
         // Pop back the stack as many steps as were not common.
         for (let j = prevStack.length - 1; j > commonSteps; j--) {
+          // $FlowFixMe[incompatible-type]
           levelChildren = stackOfChildren.pop();
         }
       }

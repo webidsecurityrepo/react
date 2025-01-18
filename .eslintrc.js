@@ -23,6 +23,7 @@ module.exports = {
     'babel',
     'ft-flow',
     'jest',
+    'es',
     'no-for-of-loops',
     'no-function-declare-after-return',
     'react',
@@ -47,7 +48,7 @@ module.exports = {
     'ft-flow/no-unused-expressions': ERROR,
     // 'ft-flow/no-weak-types': WARNING,
     // 'ft-flow/require-valid-file-annotation': ERROR,
-
+    'es/no-optional-chaining': ERROR,
     'no-cond-assign': OFF,
     'no-constant-condition': OFF,
     'no-control-regex': OFF,
@@ -302,7 +303,6 @@ module.exports = {
       ERROR,
       {isProductionUserAppCode: true},
     ],
-    'react-internal/no-to-warn-dev-within-to-throw': ERROR,
     'react-internal/warning-args': ERROR,
     'react-internal/no-production-logging': ERROR,
   },
@@ -329,6 +329,7 @@ module.exports = {
         'packages/react-server-dom-esm/**/*.js',
         'packages/react-server-dom-webpack/**/*.js',
         'packages/react-server-dom-turbopack/**/*.js',
+        'packages/react-server-dom-parcel/**/*.js',
         'packages/react-server-dom-fb/**/*.js',
         'packages/react-test-renderer/**/*.js',
         'packages/react-debug-tools/**/*.js',
@@ -435,6 +436,7 @@ module.exports = {
         'packages/react-dom/src/test-utils/*.js',
       ],
       rules: {
+        'es/no-optional-chaining': OFF,
         'react-internal/no-production-logging': OFF,
         'react-internal/warning-args': OFF,
         'react-internal/safe-string-coercion': [
@@ -480,6 +482,12 @@ module.exports = {
       },
     },
     {
+      files: ['packages/react-server-dom-parcel/**/*.js'],
+      globals: {
+        parcelRequire: 'readonly',
+      },
+    },
+    {
       files: ['packages/scheduler/**/*.js'],
       globals: {
         TaskController: 'readonly',
@@ -488,13 +496,16 @@ module.exports = {
     {
       files: [
         'packages/react-devtools-extensions/**/*.js',
+        'packages/react-devtools-shared/src/devtools/views/**/*.js',
         'packages/react-devtools-shared/src/hook.js',
         'packages/react-devtools-shared/src/backend/console.js',
+        'packages/react-devtools-shared/src/backend/shared/DevToolsComponentStackFrame.js',
       ],
       globals: {
         __IS_CHROME__: 'readonly',
         __IS_FIREFOX__: 'readonly',
         __IS_EDGE__: 'readonly',
+        __IS_NATIVE__: 'readonly',
         __IS_INTERNAL_VERSION__: 'readonly',
       },
     },
@@ -565,6 +576,7 @@ module.exports = {
     React$Node: 'readonly',
     React$Portal: 'readonly',
     React$Ref: 'readonly',
+    React$RefSetter: 'readonly',
     ReadableStreamController: 'readonly',
     ReadableStreamReader: 'readonly',
     RequestInfo: 'readonly',
@@ -578,6 +590,11 @@ module.exports = {
     WheelEventHandler: 'readonly',
     FinalizationRegistry: 'readonly',
     Omit: 'readonly',
+    Keyframe: 'readonly',
+    PropertyIndexedKeyframes: 'readonly',
+    KeyframeAnimationOptions: 'readonly',
+    GetAnimationsOptions: 'readonly',
+    Animatable: 'readonly',
 
     spyOnDev: 'readonly',
     spyOnDevAndProd: 'readonly',

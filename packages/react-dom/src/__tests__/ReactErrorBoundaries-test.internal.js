@@ -36,6 +36,7 @@ describe('ReactErrorBoundaries', () => {
   let RetryErrorBoundary;
   let Normal;
   let assertLog;
+  let assertConsoleErrorDev;
 
   beforeEach(() => {
     jest.useFakeTimers();
@@ -47,8 +48,7 @@ describe('ReactErrorBoundaries', () => {
     act = require('internal-test-utils').act;
     Scheduler = require('scheduler');
 
-    const InternalTestUtils = require('internal-test-utils');
-    assertLog = InternalTestUtils.assertLog;
+    ({assertLog, assertConsoleErrorDev} = require('internal-test-utils'));
 
     BrokenConstructor = class extends React.Component {
       constructor(props) {
@@ -895,6 +895,11 @@ describe('ReactErrorBoundaries', () => {
         </ErrorBoundary>,
       );
     });
+    assertConsoleErrorDev([
+      'BrokenComponentWillMountWithContext uses the legacy childContextTypes API which will soon be removed. ' +
+        'Use React.createContext() instead. (https://react.dev/link/legacy-context)\n' +
+        '    in BrokenComponentWillMountWithContext (at **)',
+    ]);
     expect(container.firstChild.textContent).toBe('Caught an error: Hello.');
   });
 
@@ -2363,44 +2368,53 @@ describe('ReactErrorBoundaries', () => {
   it('discards a bad root if the root component fails', async () => {
     const X = null;
     const Y = undefined;
-    let err1;
-    let err2;
 
-    try {
+    await expect(async () => {
       const container = document.createElement('div');
       const root = ReactDOMClient.createRoot(container);
-      await expect(
-        async () =>
-          await act(async () => {
-            root.render(<X />, container);
-          }),
-      ).toErrorDev(
-        'React.createElement: type is invalid -- expected a string ' +
-          '(for built-in components) or a class/function ' +
-          '(for composite components) but got: null.',
+      await act(async () => {
+        root.render(<X />);
+      });
+    }).rejects.toThrow(
+      'Element type is invalid: ' +
+        'expected a string (for built-in components) or a ' +
+        'class/function (for composite components) but got: null.',
+    );
+
+    if (!gate('enableOwnerStacks')) {
+      assertConsoleErrorDev(
+        [
+          'React.jsx: type is invalid -- expected a string ' +
+            '(for built-in components) or a class/function ' +
+            '(for composite components) but got: null.',
+        ],
+        {withoutStack: true},
       );
-    } catch (err) {
-      err1 = err;
-    }
-    try {
-      const container = document.createElement('div');
-      const root = ReactDOMClient.createRoot(container);
-      await expect(
-        async () =>
-          await act(async () => {
-            root.render(<Y />, container);
-          }),
-      ).toErrorDev(
-        'React.createElement: type is invalid -- expected a string ' +
-          '(for built-in components) or a class/function ' +
-          '(for composite components) but got: undefined.',
-      );
-    } catch (err) {
-      err2 = err;
     }
 
-    expect(err1.message).toMatch(/got: null/);
-    expect(err2.message).toMatch(/got: undefined/);
+    await expect(async () => {
+      const container = document.createElement('div');
+      const root = ReactDOMClient.createRoot(container);
+      await act(async () => {
+        root.render(<Y />);
+      });
+    }).rejects.toThrow(
+      'Element type is invalid: ' +
+        'expected a string (for built-in components) or a ' +
+        'class/function (for composite components) but got: undefined.',
+    );
+    if (!gate('enableOwnerStacks')) {
+      assertConsoleErrorDev(
+        [
+          'React.jsx: type is invalid -- expected a string ' +
+            '(for built-in components) or a class/function ' +
+            '(for composite components) but got: undefined. ' +
+            "You likely forgot to export your component from the file it's defined in, " +
+            'or you might have mixed up default and named imports.',
+        ],
+        {withoutStack: true},
+      );
+    }
   });
 
   it('renders empty output if error boundary does not handle the error', async () => {
@@ -2567,18 +2581,18 @@ describe('ReactErrorBoundaries', () => {
 
     const container = document.createElement('div');
     const root = ReactDOMClient.createRoot(container);
-    await expect(async () => {
-      await act(async () => {
-        root.render(
-          <InvalidErrorBoundary>
-            <Throws />
-          </InvalidErrorBoundary>,
-        );
-      });
-    }).toErrorDev(
+    await act(async () => {
+      root.render(
+        <InvalidErrorBoundary>
+          <Throws />
+        </InvalidErrorBoundary>,
+      );
+    });
+    assertConsoleErrorDev([
       'InvalidErrorBoundary: Error boundaries should implement getDerivedStateFromError(). ' +
-        'In that method, return a state update to display an error message or fallback UI.',
-    );
+        'In that method, return a state update to display an error message or fallback UI.\n' +
+        '    in InvalidErrorBoundary (at **)',
+    ]);
     expect(container.textContent).toBe('');
   });
 

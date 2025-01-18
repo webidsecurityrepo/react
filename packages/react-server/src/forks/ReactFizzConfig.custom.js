@@ -31,6 +31,7 @@ export opaque type Destination = mixed;
 export opaque type RenderState = mixed;
 export opaque type HoistableState = mixed;
 export opaque type ResumableState = mixed;
+export opaque type PreambleState = mixed;
 export opaque type FormatContext = mixed;
 export opaque type HeadersDescriptor = mixed;
 export type {TransitionStatus};
@@ -42,7 +43,7 @@ export const supportsClientAPIs = true;
 export const supportsRequestStorage = false;
 export const requestStorage: AsyncLocalStorage<Request | void> = (null: any);
 
-export const printToConsole = $$$config.printToConsole;
+export const bindToConsole = $$$config.bindToConsole;
 
 export const resetResumableState = $$$config.resetResumableState;
 export const completeResumableState = $$$config.completeResumableState;
@@ -51,10 +52,6 @@ export const makeId = $$$config.makeId;
 export const pushTextInstance = $$$config.pushTextInstance;
 export const pushStartInstance = $$$config.pushStartInstance;
 export const pushEndInstance = $$$config.pushEndInstance;
-export const pushStartCompletedSuspenseBoundary =
-  $$$config.pushStartCompletedSuspenseBoundary;
-export const pushEndCompletedSuspenseBoundary =
-  $$$config.pushEndCompletedSuspenseBoundary;
 export const pushSegmentFinale = $$$config.pushSegmentFinale;
 export const pushFormStateMarkerIsMatching =
   $$$config.pushFormStateMarkerIsMatching;
@@ -83,11 +80,17 @@ export const writeCompletedBoundaryInstruction =
 export const writeClientRenderBoundaryInstruction =
   $$$config.writeClientRenderBoundaryInstruction;
 export const NotPendingTransition = $$$config.NotPendingTransition;
+export const createPreambleState = $$$config.createPreambleState;
+export const canHavePreamble = $$$config.canHavePreamble;
+export const isPreambleContext = $$$config.isPreambleContext;
+export const isPreambleReady = $$$config.isPreambleReady;
+export const hoistPreambleState = $$$config.hoistPreambleState;
 
 // -------------------------
 //     Resources
 // -------------------------
-export const writePreamble = $$$config.writePreamble;
+export const writePreambleStart = $$$config.writePreambleStart;
+export const writePreambleEnd = $$$config.writePreambleEnd;
 export const writeHoistables = $$$config.writeHoistables;
 export const writeHoistablesForBoundary = $$$config.writeHoistablesForBoundary;
 export const writePostamble = $$$config.writePostamble;

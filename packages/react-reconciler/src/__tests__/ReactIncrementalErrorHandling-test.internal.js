@@ -1158,7 +1158,7 @@ describe('ReactIncrementalErrorHandling', () => {
   // because it's used for new context, suspense, and many other features.
   // It has to be tested independently for each feature anyway. So although it
   // doesn't look like it, this test is specific to legacy context.
-  // @gate !disableLegacyContext
+  // @gate !disableLegacyContext && !disableLegacyContextForFunctionComponents
   it('unwinds the context stack correctly on error', async () => {
     class Provider extends React.Component {
       static childContextTypes = {message: PropTypes.string};
@@ -1211,7 +1211,20 @@ describe('ReactIncrementalErrorHandling', () => {
         <Connector />
       </Provider>,
     );
+
     await waitForAll([]);
+    assertConsoleErrorDev([
+      'Provider uses the legacy childContextTypes API which will soon be removed. ' +
+        'Use React.createContext() instead. (https://react.dev/link/legacy-context)\n' +
+        '    in Provider (at **)',
+      'Provider uses the legacy contextTypes API which will soon be removed. ' +
+        'Use React.createContext() with static contextType instead. (https://react.dev/link/legacy-context)\n' +
+        '    in Provider (at **)',
+      'Connector uses the legacy contextTypes API which will be removed soon. ' +
+        'Use React.createContext() with React.useContext() instead. (https://react.dev/link/legacy-context)\n' +
+        '    in Connector (at **)' +
+        (gate('enableOwnerStacks') ? '' : '\n    in Provider (at **)'),
+    ]);
 
     // If the context stack does not unwind, span will get 'abcde'
     expect(ReactNoop).toMatchRenderedOutput(<span prop="a" />);
@@ -1243,9 +1256,19 @@ describe('ReactIncrementalErrorHandling', () => {
     await waitForAll([]);
     if (gate(flags => !flags.enableOwnerStacks)) {
       assertConsoleErrorDev([
-        'React.jsx: type is invalid -- expected a string',
+        'React.jsx: type is invalid -- expected a string (for built-in components) ' +
+          'or a class/function (for composite components) but got: undefined. ' +
+          "You likely forgot to export your component from the file it's defined in, " +
+          'or you might have mixed up default and named imports.\n' +
+          '    in BrokenRender (at **)\n' +
+          '    in ErrorBoundary (at **)',
         // React retries once on error
-        'React.jsx: type is invalid -- expected a string',
+        'React.jsx: type is invalid -- expected a string (for built-in components) ' +
+          'or a class/function (for composite components) but got: undefined. ' +
+          "You likely forgot to export your component from the file it's defined in, " +
+          'or you might have mixed up default and named imports.\n' +
+          '    in BrokenRender (at **)\n' +
+          '    in ErrorBoundary (at **)',
       ]);
     }
 
@@ -1298,9 +1321,19 @@ describe('ReactIncrementalErrorHandling', () => {
     await waitForAll([]);
     if (gate(flags => !flags.enableOwnerStacks)) {
       assertConsoleErrorDev([
-        'React.jsx: type is invalid -- expected a string',
+        'React.jsx: type is invalid -- expected a string (for built-in components) ' +
+          'or a class/function (for composite components) but got: undefined. ' +
+          "You likely forgot to export your component from the file it's defined in, " +
+          'or you might have mixed up default and named imports.\n' +
+          '    in BrokenRender (at **)\n' +
+          '    in ErrorBoundary (at **)',
         // React retries once on error
-        'React.jsx: type is invalid -- expected a string',
+        'React.jsx: type is invalid -- expected a string (for built-in components) ' +
+          'or a class/function (for composite components) but got: undefined. ' +
+          "You likely forgot to export your component from the file it's defined in, " +
+          'or you might have mixed up default and named imports.\n' +
+          '    in BrokenRender (at **)\n' +
+          '    in ErrorBoundary (at **)',
       ]);
     }
     expect(ReactNoop).toMatchRenderedOutput(
@@ -1323,7 +1356,12 @@ describe('ReactIncrementalErrorHandling', () => {
     ReactNoop.render(<InvalidType />);
     if (gate(flags => !flags.enableOwnerStacks)) {
       assertConsoleErrorDev(
-        ['React.jsx: type is invalid -- expected a string'],
+        [
+          'React.jsx: type is invalid -- expected a string (for built-in components) ' +
+            'or a class/function (for composite components) but got: undefined. ' +
+            "You likely forgot to export your component from the file it's defined in, " +
+            'or you might have mixed up default and named imports.',
+        ],
         {withoutStack: true},
       );
     }

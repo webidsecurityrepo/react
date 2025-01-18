@@ -18,16 +18,11 @@ import {
   MountLayoutDev,
 } from './ReactFiberFlags';
 import {
-  debugRenderPhaseSideEffectsForStrictMode,
   disableLegacyContext,
-  enableDebugTracing,
   enableSchedulingProfiler,
-  enableLazyContextPropagation,
-  enableRefAsProp,
   disableDefaultPropsExceptForClasses,
 } from 'shared/ReactFeatureFlags';
 import ReactStrictModeWarnings from './ReactStrictModeWarnings';
-import {isMounted} from './ReactFiberTreeReflection';
 import {get as getInstance, set as setInstance} from 'shared/ReactInstanceMap';
 import shallowEqual from 'shared/shallowEqual';
 import getComponentNameFromFiber from 'react-reconciler/src/getComponentNameFromFiber';
@@ -36,12 +31,7 @@ import assign from 'shared/assign';
 import isArray from 'shared/isArray';
 import {REACT_CONTEXT_TYPE, REACT_CONSUMER_TYPE} from 'shared/ReactSymbols';
 
-import {
-  DebugTracingMode,
-  NoMode,
-  StrictLegacyMode,
-  StrictEffectsMode,
-} from './ReactTypeOfMode';
+import {NoMode, StrictLegacyMode, StrictEffectsMode} from './ReactTypeOfMode';
 
 import {
   enqueueUpdate,
@@ -66,12 +56,12 @@ import {
 } from './ReactFiberContext';
 import {readContext, checkIfContextChanged} from './ReactFiberNewContext';
 import {requestUpdateLane, scheduleUpdateOnFiber} from './ReactFiberWorkLoop';
-import {logForceUpdateScheduled, logStateUpdateScheduled} from './DebugTracing';
 import {
   markForceUpdateScheduled,
   markStateUpdateScheduled,
   setIsStrictModeForDevtools,
 } from './ReactFiberDevToolsHook';
+import {startUpdateTimerByLane} from './ReactProfilerTimer';
 
 const fakeInternalInstance = {};
 
@@ -82,6 +72,8 @@ let didWarnAboutLegacyLifecyclesAndDerivedState;
 let didWarnAboutUndefinedDerivedState;
 let didWarnAboutDirectlyAssigningPropsToState;
 let didWarnAboutContextTypeAndContextTypes;
+let didWarnAboutContextTypes;
+let didWarnAboutChildContextTypes;
 let didWarnAboutInvalidateContextType;
 let didWarnOnInvalidCallback;
 
@@ -93,6 +85,8 @@ if (__DEV__) {
   didWarnAboutDirectlyAssigningPropsToState = new Set<string>();
   didWarnAboutUndefinedDerivedState = new Set<string>();
   didWarnAboutContextTypeAndContextTypes = new Set<string>();
+  didWarnAboutContextTypes = new Set<mixed>();
+  didWarnAboutChildContextTypes = new Set<mixed>();
   didWarnAboutInvalidateContextType = new Set<string>();
   didWarnOnInvalidCallback = new Set<string>();
 
@@ -142,10 +136,7 @@ function applyDerivedStateFromProps(
   const prevState = workInProgress.memoizedState;
   let partialState = getDerivedStateFromProps(nextProps, prevState);
   if (__DEV__) {
-    if (
-      debugRenderPhaseSideEffectsForStrictMode &&
-      workInProgress.mode & StrictLegacyMode
-    ) {
+    if (workInProgress.mode & StrictLegacyMode) {
       setIsStrictModeForDevtools(true);
       try {
         // Invoke the function an extra time to help detect side-effects.
@@ -173,7 +164,6 @@ function applyDerivedStateFromProps(
 }
 
 const classComponentUpdater = {
-  isMounted,
   // $FlowFixMe[missing-local-annot]
   enqueueSetState(inst: any, payload: any, callback) {
     const fiber = getInstance(inst);
@@ -190,17 +180,9 @@ const classComponentUpdater = {
 
     const root = enqueueUpdate(fiber, update, lane);
     if (root !== null) {
+      startUpdateTimerByLane(lane);
       scheduleUpdateOnFiber(root, fiber, lane);
       entangleTransitions(root, fiber, lane);
-    }
-
-    if (__DEV__) {
-      if (enableDebugTracing) {
-        if (fiber.mode & DebugTracingMode) {
-          const name = getComponentNameFromFiber(fiber) || 'Unknown';
-          logStateUpdateScheduled(name, lane, payload);
-        }
-      }
     }
 
     if (enableSchedulingProfiler) {
@@ -224,17 +206,9 @@ const classComponentUpdater = {
 
     const root = enqueueUpdate(fiber, update, lane);
     if (root !== null) {
+      startUpdateTimerByLane(lane);
       scheduleUpdateOnFiber(root, fiber, lane);
       entangleTransitions(root, fiber, lane);
-    }
-
-    if (__DEV__) {
-      if (enableDebugTracing) {
-        if (fiber.mode & DebugTracingMode) {
-          const name = getComponentNameFromFiber(fiber) || 'Unknown';
-          logStateUpdateScheduled(name, lane, payload);
-        }
-      }
     }
 
     if (enableSchedulingProfiler) {
@@ -258,17 +232,9 @@ const classComponentUpdater = {
 
     const root = enqueueUpdate(fiber, update, lane);
     if (root !== null) {
+      startUpdateTimerByLane(lane);
       scheduleUpdateOnFiber(root, fiber, lane);
       entangleTransitions(root, fiber, lane);
-    }
-
-    if (__DEV__) {
-      if (enableDebugTracing) {
-        if (fiber.mode & DebugTracingMode) {
-          const name = getComponentNameFromFiber(fiber) || 'Unknown';
-          logForceUpdateScheduled(name, lane);
-        }
-      }
     }
 
     if (enableSchedulingProfiler) {
@@ -294,10 +260,7 @@ function checkShouldComponentUpdate(
       nextContext,
     );
     if (__DEV__) {
-      if (
-        debugRenderPhaseSideEffectsForStrictMode &&
-        workInProgress.mode & StrictLegacyMode
-      ) {
+      if (workInProgress.mode & StrictLegacyMode) {
         setIsStrictModeForDevtools(true);
         try {
           // Invoke the function an extra time to help detect side-effects.
@@ -376,13 +339,6 @@ function checkClassInstance(workInProgress: Fiber, ctor: any, newProps: any) {
         name,
       );
     }
-    if (instance.propTypes) {
-      console.error(
-        'propTypes was defined as an instance property on %s. Use a static ' +
-          'property to define propTypes instead.',
-        name,
-      );
-    }
     if (instance.contextType) {
       console.error(
         'contextType was defined as an instance property on %s. Use a static ' +
@@ -392,17 +348,20 @@ function checkClassInstance(workInProgress: Fiber, ctor: any, newProps: any) {
     }
 
     if (disableLegacyContext) {
-      if (ctor.childContextTypes) {
+      if (ctor.childContextTypes && !didWarnAboutChildContextTypes.has(ctor)) {
+        didWarnAboutChildContextTypes.add(ctor);
         console.error(
           '%s uses the legacy childContextTypes API which was removed in React 19. ' +
-            'Use React.createContext() instead.',
+            'Use React.createContext() instead. (https://react.dev/link/legacy-context)',
           name,
         );
       }
-      if (ctor.contextTypes) {
+      if (ctor.contextTypes && !didWarnAboutContextTypes.has(ctor)) {
+        didWarnAboutContextTypes.add(ctor);
         console.error(
           '%s uses the legacy contextTypes API which was removed in React 19. ' +
-            'Use React.createContext() with static contextType instead.',
+            'Use React.createContext() with static contextType instead. ' +
+            '(https://react.dev/link/legacy-context)',
           name,
         );
       }
@@ -424,6 +383,23 @@ function checkClassInstance(workInProgress: Fiber, ctor: any, newProps: any) {
         console.error(
           '%s declares both contextTypes and contextType static properties. ' +
             'The legacy contextTypes property will be ignored.',
+          name,
+        );
+      }
+      if (ctor.childContextTypes && !didWarnAboutChildContextTypes.has(ctor)) {
+        didWarnAboutChildContextTypes.add(ctor);
+        console.error(
+          '%s uses the legacy childContextTypes API which will soon be removed. ' +
+            'Use React.createContext() instead. (https://react.dev/link/legacy-context)',
+          name,
+        );
+      }
+      if (ctor.contextTypes && !didWarnAboutContextTypes.has(ctor)) {
+        didWarnAboutContextTypes.add(ctor);
+        console.error(
+          '%s uses the legacy contextTypes API which will soon be removed. ' +
+            'Use React.createContext() with static contextType instead. ' +
+            '(https://react.dev/link/legacy-context)',
           name,
         );
       }
@@ -613,10 +589,7 @@ function constructClassInstance(
   let instance = new ctor(props, context);
   // Instantiate twice to help detect side-effects.
   if (__DEV__) {
-    if (
-      debugRenderPhaseSideEffectsForStrictMode &&
-      workInProgress.mode & StrictLegacyMode
-    ) {
+    if (workInProgress.mode & StrictLegacyMode) {
       setIsStrictModeForDevtools(true);
       try {
         instance = new ctor(props, context);
@@ -1106,7 +1079,6 @@ function updateClassInstance(
     !hasContextChanged() &&
     !checkHasForceUpdateAfterProcessing() &&
     !(
-      enableLazyContextPropagation &&
       current !== null &&
       current.dependencies !== null &&
       checkIfContextChanged(current.dependencies)
@@ -1158,8 +1130,7 @@ function updateClassInstance(
     // both before and after `shouldComponentUpdate` has been called. Not ideal,
     // but I'm loath to refactor this function. This only happens for memoized
     // components so it's not that common.
-    (enableLazyContextPropagation &&
-      current !== null &&
+    (current !== null &&
       current.dependencies !== null &&
       checkIfContextChanged(current.dependencies));
 
@@ -1231,14 +1202,12 @@ export function resolveClassComponentProps(
 ): Object {
   let newProps = baseProps;
 
-  if (enableRefAsProp) {
-    // Remove ref from the props object, if it exists.
-    if ('ref' in baseProps) {
-      newProps = ({}: any);
-      for (const propName in baseProps) {
-        if (propName !== 'ref') {
-          newProps[propName] = baseProps[propName];
-        }
+  // Remove ref from the props object, if it exists.
+  if ('ref' in baseProps) {
+    newProps = ({}: any);
+    for (const propName in baseProps) {
+      if (propName !== 'ref') {
+        newProps[propName] = baseProps[propName];
       }
     }
   }
